@@ -1,0 +1,33 @@
+services:
+  redis:
+    image: redis:8.2-alpine
+    container_name: portfolio-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: portfolio-redisinsight
+    ports:
+      - "5540:5540"
+    depends_on:
+      - redis
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: portfolio-postgres
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password123
+      POSTGRES_DB: portfolio_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+volumes:
+  redis_data:
+  pg_data:

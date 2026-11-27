@@ -1,0 +1,29 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model TicketOrder {
+  id        String   @id @default(uuid())
+  eventId   String
+  userId    String
+  seatId    String
+  status    String   @default("CONFIRMED")
+  createdAt DateTime @default(now())
+
+  // Database-level safety net preventing duplicate seat bookings
+  @@unique([eventId, seatId])
+}
+
+model MatchHistory {
+  id           String   @id @default(uuid())
+  lobbySize    Int
+  playersJson  String   // JSON array of matched player IDs
+  averageMmr   Int
+  maxSpreadKm  Int
+  createdAt    DateTime @default(now())
+}

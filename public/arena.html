@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FlashArena — Geo-Matchmaking & Live Leaderboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans p-6">
+  <div class="max-w-6xl mx-auto space-y-6">
+    <!-- Header & Navigation -->
+    <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-4">
+      <div>
+        <span class="text-xs font-mono uppercase tracking-widest px-2.5 py-1 rounded bg-indigo-950 text-indigo-300 border border-indigo-800">
+          Redis GEO + ZSET Pipeline + Socket.IO
+        </span>
+        <h1 class="text-3xl font-bold mt-2">FlashArena — Matchmaking & Global Leaderboard</h1>
+      </div>
+      <div class="flex flex-wrap gap-3">
+        <a href="/index.html" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm font-medium">
+          ← VIP Seat Drop
+        </a>
+        <button onclick="simulatePopulation(120)" class="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm">
+          ⚡ Simulate 120 Global Players
+        </button>
+      </div>
+    </div>
+
+    <!-- Top Controls: Queue / Score + Player Rank Inspector -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <!-- Join Queue & Update MMR Card -->
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+        <h2 class="text-lg font-semibold text-indigo-300">Player Matchmaking & Rating</h2>
+        <div class="grid grid-cols-2 gap-3 text-sm">
+          <div>
+            <label class="text-slate-400 block mb-1">User ID</label>
+            <input id="userId" value="player_1" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 font-mono" />
+          </div>
+          <div>
+            <label class="text-slate-400 block mb-1">MMR Score</label>
+            <input id="mmr" type="number" value="1850" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 font-mono" />
+          </div>
+          <div>
+            <label class="text-slate-400 block mb-1">Longitude (lon)</label>
+            <input id="lon" type="number" step="0.0001" value="8.6821" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 font-mono" />
+          </div>
+          <div>
+            <label class="text-slate-400 block mb-1">Latitude (lat)</label>
+            <input id="lat" type="number" step="0.0001" value="50.1109" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 font-mono" />
+          </div>
+        </div>
+
+        <div class="flex flex-wrap gap-2 pt-2">
+          <button onclick="joinMatchmaking()" class="flex-1 py-2.5 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 font-semibold text-sm">
+            Join Matchmaking Queue
+          </button>
+          <button onclick="updateScore()" class="flex-1 py-2.5 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-semibold text-sm">
+            Set Leaderboard MMR
+          </button>
+          <button onclick="lookupPlayer()" class="py-2.5 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 font-semibold text-sm">
+            Inspect Rank
+          </button>
+        </div>
+
+        <!-- Player Rank Context Output -->
+        <div id="playerContext" class="bg-slate-950 border border-slate-800 rounded-lg p-3 text-xs font-mono text-slate-400">
+          Click "Inspect Rank" or click any player on the leaderboard to view their exact rank & neighboring rivals.
+        </div>
+      </div>
+
+      <!-- Live Global Leaderboard Card -->
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-lg font-semibold text-emerald-300">Top 20 Global Leaderboard (ZREVRANGE)</h2>
+          <button onclick="loadLeaderboard()" class="text-xs text-slate-400 hover:text-white underline">Refresh</button>
+        </div>
+        <div id="leaderboard" class="space-y-1.5 text-sm font-mono max-h-72 overflow-y-auto pr-1">
+          <div class="text-slate-500">Loading leaderboard...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Real-Time Socket.IO Event Stream -->
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+      <h2 class="text-lg font-semibold mb-3">Live Matchmaking & Arena Telemetry (Redis Pub/Sub → Socket.IO)</h2>
+      <div id="logs" class="bg-slate-950 rounded-lg p-4 h-56 overflow-y-auto font-mono text-xs space-y-1.5 border border-slate-800"></div>
+    </div>
+  </div>
+
+  <script>
+    const socket = io();
+    const logsEl = document.getElementById("logs");
+
+    function log(msg, color = "text-slate-300") {
+      const time = new Date().toLocaleTimeString();
+      logsEl.innerHTML = `<div class="${color}">[${time}] ${msg}</div>` + logsEl.innerHTML;
+    }
+
+    socket.on("connect", () => log("Connected to Socket.IO real-time telemetry", "text-emerald-400"));
+    socket.on("arena_event", (evt) => {
+      log(`MATCH/ARENA EVENT: ${JSON.stringify(evt)}`, "text-cyan-300");
+      loadLeaderboard();
+    });
+
+    async function joinMatchmaking() {
+      const body = {
+        userId: document.getElementById("userId").value.trim(),
+        mmr: Number(document.getElementById("mmr").value),
+        lon: Number(document.getElementById("lon").value),
+        lat: Number(document.getElementById("lat").value),
+      };
+      const res = await fetch("/api/arena/matchmaking/join", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      log(`Joined Queue: ${body.userId} (MMR ${body.mmr} @ [${body.lon}, ${body.lat}]) → ${JSON.stringify(data)}`, res.ok ? "text-amber-300" : "text-rose-400");
+    }
+
+    async function updateScore() {
+      const body = {
+        userId: document.getElementById("userId").value.trim(),
+        mmr: Number(document.getElementById("mmr").value),
+      };
+      const res = await fetch("/api/arena/score", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      log(`Updated Score: ${body.userId} → ${body.mmr} MMR (${JSON.stringify(data)})`, res.ok ? "text-emerald-300" : "text-rose-400");
+      loadLeaderboard();
+      lookupPlayer(body.userId);
+    }
+
+    async function simulatePopulation(count) {
+      log(`Simulating ${count} players across EU-Central, US-East, and AP-South via Redis Pipeline...`, "text-amber-400");
+      const res = await fetch("/api/arena/simulate-population", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ count }),
+      });
+      const data = await res.json();
+      log(`Population seeded: ${JSON.stringify(data)} — watch for lobby matches every 2s!`, "text-emerald-400");
+      loadLeaderboard();
+    }
+
+    async function lookupPlayer(targetId) {
+      const userId = targetId || document.getElementById("userId").value.trim();
+      document.getElementById("userId").value = userId;
+      const box = document.getElementById("playerContext");
+      const res = await fetch(`/api/arena/player/${encodeURIComponent(userId)}`);
+      const data = await res.json();
+      if (!res.ok) {
+        box.innerHTML = `<span class="text-rose-400">${userId}: ${data.error || "Not found"}</span>`;
+        return;
+      }
+      box.innerHTML = `<pre class="whitespace-pre-wrap text-indigo-200">${JSON.stringify(data, null, 2)}</pre>`;
+    }
+
+    async function loadLeaderboard() {
+      try {
+        const res = await fetch("/api/arena/leaderboard?limit=20");
+        const data = await res.json();
+        const rows = Array.isArray(data) ? data : (data.leaderboard || data.players || []);
+        const boardEl = document.getElementById("leaderboard");
+        if (!rows.length) {
+          boardEl.innerHTML = `<div class="text-slate-500">Leaderboard empty. Click "⚡ Simulate 120 Global Players" above!</div>`;
+          return;
+        }
+        boardEl.innerHTML = rows
+          .map((item, idx) => {
+            const id = item.userId || item.playerId || item.member || item;
+            const score = item.mmr ?? item.score ?? "";
+            const rank = item.rank ?? idx + 1;
+            return `
+              <button onclick="lookupPlayer('${id}')" class="w-full flex justify-between items-center bg-slate-950 hover:bg-slate-800/80 px-3 py-2 rounded border border-slate-800 text-left transition">
+                <span><span class="text-slate-500 mr-2">#${rank}</span><strong class="text-indigo-300">${id}</strong></span>
+                <span class="text-emerald-400 font-semibold">${score} MMR</span>
+              </button>
+            `;
+          })
+          .join("");
+      } catch (e) {
+        log(`Leaderboard error: ${e.message}`, "text-rose-400");
+      }
+    }
+
+    loadLeaderboard();
+  </script>
+</body>
+</html>

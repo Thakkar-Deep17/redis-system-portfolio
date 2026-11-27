@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>World Tour Finals — VIP Seat Drop</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans p-6">
+  <div class="max-w-5xl mx-auto space-y-6">
+    <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-4">
+      <div>
+        <span class="text-xs font-mono uppercase tracking-widest px-2.5 py-1 rounded bg-rose-950 text-rose-300 border border-rose-800">
+          Redis Lua + Streams Engine
+        </span>
+        <h1 class="text-3xl font-bold mt-2">World Tour Finals — VIP Seat Drop</h1>
+      </div>
+      <div class="flex flex-wrap gap-3">
+        <a href="/arena.html" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm font-semibold">
+          Switch to FlashArena →
+        </a>
+        <button onclick="seedSeats()" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm font-semibold">
+          Reset &amp; Seed 50 Seats
+        </button>
+        <button onclick="simulateBots(100)" class="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm">
+          ⚡ Blast 100 Concurrent Bots
+        </button>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+        <div class="text-xs font-mono text-slate-400 uppercase">Atomic Stock Remaining</div>
+        <div id="stockCount" class="text-4xl font-bold text-emerald-400 mt-2">0</div>
+      </div>
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+        <div class="text-xs font-mono text-slate-400 uppercase">Active 5-Min Seat Locks</div>
+        <div id="lockedCount" class="text-4xl font-bold text-amber-400 mt-2">0</div>
+      </div>
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+        <div class="text-xs font-mono text-slate-400 uppercase">Event ID</div>
+        <div class="text-3xl font-mono font-bold text-indigo-400 mt-2">concert-1</div>
+      </div>
+    </div>
+
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+      <div class="flex justify-between items-center mb-4">
+        <h2 class="text-lg font-semibold">Click a Seat to Lock &amp; Confirm</h2>
+        <span class="text-xs font-mono text-slate-400">2-Step: Lua Reserve → XADD Stream</span>
+      </div>
+      <div id="seatGrid" class="grid grid-cols-5 sm:grid-cols-10 gap-2"></div>
+    </div>
+
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+      <h2 class="text-lg font-semibold mb-3">Live Redis Telemetry Log</h2>
+      <div id="logs" class="bg-slate-950 rounded-lg p-4 h-56 overflow-y-auto font-mono text-xs space-y-1.5 border border-slate-800"></div>
+    </div>
+  </div>
+
+  <script>
+    const EVENT_ID = "concert-1";
+    const confirmedSeats = new Set();
+    const logsEl = document.getElementById("logs");
+
+    function log(msg, color = "text-slate-300") {
+      const time = new Date().toLocaleTimeString();
+      logsEl.innerHTML = `<div class="${color}">[${time}] ${msg}</div>` + logsEl.innerHTML;
+    }
+
+    function renderSeats() {
+      const grid = document.getElementById("seatGrid");
+      grid.innerHTML = Array.from({ length: 50 }, (_, i) => {
+        const seatId = `A-${i + 1}`;
+        const isConfirmed = confirmedSeats.has(seatId);
+        const cls = isConfirmed
+          ? "bg-emerald-900/50 border-emerald-500 text-emerald-300"
+          : "bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-200";
+        return `<button onclick="bookSingleSeat('${seatId}')" class="py-2 rounded border font-mono text-xs font-semibold ${cls}">${seatId}</button>`;
+      }).join("");
+    }
+
+    async function refreshStatus() {
+      const res = await fetch(`/api/flash-sale/status/${EVENT_ID}`);
+      const data = await res.json();
+      document.getElementById("stockCount").textContent = data.remainingStock;
+      document.getElementById("lockedCount").textContent = data.activeLockedSeats;
+    }
+
+    async function seedSeats() {
+      confirmedSeats.clear();
+      renderSeats();
+      await fetch("/api/flash-sale/seed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ eventId: EVENT_ID, totalTickets: 50 }),
+      });
+      log("Seeded 50 atomic tickets in Redis", "text-sky-400");
+      refreshStatus();
+    }
+
+    async function bookSingleSeat(seatId) {
+      const userId = `user-${Math.floor(Math.random() * 9000 + 1000)}`;
+      const res = await fetch("/api/flash-sale/reserve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ eventId: EVENT_ID, seatId, userId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        log(`REJECTED ${seatId}: ${data.reason}`, "text-rose-400");
+        return refreshStatus();
+      }
+      log(`LOCKED ${seatId} for ${userId} (TTL 300s)`, "text-amber-400");
+
+      const conf = await fetch("/api/flash-sale/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ eventId: EVENT_ID, seatId, userId }),
+      });
+      const confData = await conf.json();
+      if (conf.ok) {
+        confirmedSeats.add(seatId);
+        renderSeats();
+        log(`CONFIRMED ${seatId} → Stream ID ${confData.streamId}`, "text-emerald-400");
+      }
+      refreshStatus();
+    }
+
+    async function simulateBots(count) {
+      log(`Firing ${count} concurrent requests at Seat A-1 & random seats...`, "text-amber-400");
+      const requests = Array.from({ length: count }, (_, idx) => {
+        const seatId = idx < 25 ? "A-1" : `A-${(idx % 50) + 1}`;
+        return fetch("/api/flash-sale/reserve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ eventId: EVENT_ID, seatId, userId: `bot-${idx}-${Date.now()}` }),
+        });
+      });
+      const responses = await Promise.all(requests);
+      const locked = responses.filter((r) => r.ok).length;
+      log(`Burst result: ${locked} locked, ${count - locked} blocked by Lua atomicity`, "text-cyan-400");
+      refreshStatus();
+    }
+
+    renderSeats();
+    refreshStatus();
+    setInterval(refreshStatus, 2500);
+  </script>
+</body>
+</html>
